@@ -9,6 +9,7 @@ DEFAULT_API_KEY = os.getenv("LLM_API_KEY")
 DEFAULT_BASE_URL = os.getenv("LLM_BASE_URL")
 PROMPT_DEBUG_DIR = os.getenv("PROMPT_DEBUG_DIR", "")
 
+
 class LLM:
     def __init__(self, model=DEFAULT_MODEL, api_key=DEFAULT_API_KEY, base_url=DEFAULT_BASE_URL, debug_dir=PROMPT_DEBUG_DIR):
         self.model = model if model else DEFAULT_MODEL
@@ -23,6 +24,7 @@ class LLM:
         if self._debug_dir:
             print(f"Logging prompts to {self._debug_dir}/{self._debug_id}")
             completion_unwrapped = self._completion
+
             def wrapper(*args, **kwargs):
                 if "messages" in kwargs:
                     messages = kwargs["messages"]
@@ -32,7 +34,7 @@ class LLM:
                 message_back = resp['choices'][0]['message']['content']
                 self.write_debug(messages, message_back)
                 return resp
-            self._completion = wrapper # type: ignore
+            self._completion = wrapper  # type: ignore
 
     @property
     def completion(self):
@@ -55,4 +57,3 @@ class LLM:
         with open(f"{dir}/response.md", "w") as f:
             f.write(response)
         self._debug_idx += 1
-
