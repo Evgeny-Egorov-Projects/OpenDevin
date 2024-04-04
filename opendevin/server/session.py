@@ -159,6 +159,8 @@ class Session:
             return
         try:
             self.agent_task = await asyncio.create_task(self.controller.start_loop(task), name="agent loop")
+            self.archive_work()
+
         except Exception:
             await self.send_error("Error during task loop.")
 
@@ -181,3 +183,7 @@ class Session:
             self.agent_task.cancel()
         if self.controller is not None:
             self.controller.command_manager.shell.close()
+
+    def archive_work(self):
+        filename = "work.tar.gz"
+        os.system(f"tar -czvf {filename} {DEFAULT_WORKSPACE_DIR}")
