@@ -67,7 +67,7 @@ For example, a PR title could be:
 
 You may also check out previous PRs in the [PR list](https://github.com/OpenDevin/OpenDevin/pulls).
 
-As described in [here](https://github.com/OpenDevin/OpenDevin/labels), we create several labels. Every PR should better tag with corresponding labels.
+As described in [here](https://github.com/OpenDevin/OpenDevin/labels), we create several labels. Every PR should be tagged with the corresponding labels.
 
 ### 2. Pull Request description
 
@@ -76,7 +76,13 @@ As described in [here](https://github.com/OpenDevin/OpenDevin/labels), we create
 
 
 ## How to begin
-Please check the details in each parts: [frontend](./frontend/README.md), [agenthub](./agenthub/README.md), [evaluation](./evaluation/README.md), [server](./server/README.md).
+Please refer to the README in each module:
+- [frontend](./frontend/README.md)
+- [agenthub](./agenthub/README.md)
+- [evaluation](./evaluation/README.md)
+- [opendevin](./opendevin/README.md)
+    - [server](./opendevin/server/README.md)
+    - [mock server](./opendevin/mock/README.md)
 
 ## Tests
 TODO: make sure code pass the test before submit.

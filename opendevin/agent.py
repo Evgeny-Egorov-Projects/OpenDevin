@@ -12,9 +12,6 @@ class Agent(ABC):
     executing a specific instruction and allowing human interaction with the
     agent during execution.
     It tracks the execution status and maintains a history of interactions.
-
-    :param instruction: The instruction for the agent to execute.
-    :param model_name: The litellm name of the model to use for the agent.
     """
 
     _registry: Dict[str, Type["Agent"]] = {}
@@ -23,7 +20,6 @@ class Agent(ABC):
         self,
         llm: LLM,
     ):
-        self.instruction = ""
         self.llm = llm
         self._complete = False
 
@@ -64,7 +60,6 @@ class Agent(ABC):
         to prepare the agent for restarting the instruction or cleaning up before destruction.
 
         """
-        self.instruction = ""
         self._complete = False
 
     @classmethod
@@ -94,3 +89,13 @@ class Agent(ABC):
         if name not in cls._registry:
             raise ValueError(f"No agent class registered under '{name}'.")
         return cls._registry[name]
+
+    @classmethod
+    def listAgents(cls) -> list[str]:
+        """
+        Retrieves the list of all agent names from the registry.
+        """
+        if not bool(cls._registry):
+            raise ValueError("No agent class registered.")
+        return list(cls._registry.keys())
+        
