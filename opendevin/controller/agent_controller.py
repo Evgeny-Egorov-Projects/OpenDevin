@@ -1,163 +1,207 @@
-
 import asyncio
-import inspect
 import traceback
-from typing import List, Callable, Literal, Mapping, Awaitable, Any, cast
+from typing import Callable, List
 
-from termcolor import colored
+from openai import AuthenticationError, APIConnectionError
+from litellm import ContextWindowExceededError
 
-from opendevin.plan import Plan
-from opendevin.state import State
-from opendevin.agent import Agent
+from opendevin import config
 from opendevin.action import (
     Action,
-    NullAction,
     AgentFinishAction,
-    AddTaskAction,
-    ModifyTaskAction
+    NullAction,
 )
-from opendevin.observation import (
-    Observation,
-    AgentErrorObservation,
-    NullObservation
-)
-from opendevin import config
+from opendevin.agent import Agent
+from opendevin.exceptions import AgentNoActionError, MaxCharsExceedError
+from opendevin.logger import opendevin_logger as logger
+from opendevin.observation import AgentErrorObservation, NullObservation, Observation
+from opendevin.plan import Plan
+from opendevin.state import State
 
-from .command_manager import CommandManager
+from ..action.tasks import TaskStateChangedAction
+from ..schema import TaskState
+from .action_manager import ActionManager
 
+MAX_ITERATIONS = config.get('MAX_ITERATIONS')
+MAX_CHARS = config.get('MAX_CHARS')
 
-ColorType = Literal['red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'light_grey', 'dark_grey', 'light_red', 'light_green', 'light_yellow', 'light_blue', 'light_magenta', 'light_cyan', 'white']
-
-DISABLE_COLOR_PRINTING = config.get_or_default("DISABLE_COLOR", "false").lower() == "true"
-MAX_ITERATIONS = config.get("MAX_ITERATIONS")
-
-def print_with_color(text: Any, print_type: str = "INFO"):
-    TYPE_TO_COLOR: Mapping[str, ColorType] = {
-        "BACKGROUND LOG": "blue",
-        "ACTION": "green",
-        "OBSERVATION": "yellow",
-        "INFO": "cyan",
-        "ERROR": "red",
-        "PLAN": "light_magenta",
-    }
-    color = TYPE_TO_COLOR.get(print_type.upper(), TYPE_TO_COLOR["INFO"])
-    if DISABLE_COLOR_PRINTING:
-        print(f"\n{print_type.upper()}:\n{str(text)}", flush=True)
-    else:
-        print(
-            colored(f"\n{print_type.upper()}:\n", color, attrs=["bold"])
-            + colored(str(text), color),
-            flush=True,
-        )
 
 class AgentController:
+    id: str
+    agent: Agent
+    max_iterations: int
+    action_manager: ActionManager
+    callbacks: List[Callable]
+
+    state: State | None = None
+
+    _task_state: TaskState = TaskState.INIT
+    _cur_step: int = 0
+
     def __init__(
         self,
         agent: Agent,
-        workdir: str,
+        sid: str = '',
         max_iterations: int = MAX_ITERATIONS,
+        max_chars: int = MAX_CHARS,
         container_image: str | None = None,
         callbacks: List[Callable] = [],
     ):
+        self.id = sid
         self.agent = agent
         self.max_iterations = max_iterations
-        self.workdir = workdir
-        self.command_manager = CommandManager(workdir,container_image)
+        self.action_manager = ActionManager(self.id, container_image)
+        self.max_chars = max_chars
         self.callbacks = callbacks
+        # Initialize agent-required plugins for sandbox (if any)
+        self.action_manager.init_sandbox_plugins(agent.sandbox_plugins)
 
     def update_state_for_step(self, i):
+        if self.state is None:
+            return
         self.state.iteration = i
-        self.state.background_commands_obs = self.command_manager.get_background_obs()
+        self.state.background_commands_obs = self.action_manager.get_background_obs()
 
     def update_state_after_step(self):
+        if self.state is None:
+            return
         self.state.updated_info = []
 
     def add_history(self, action: Action, observation: Observation):
+        if self.state is None:
+            return
         if not isinstance(action, Action):
-            raise ValueError("action must be an instance of Action")
+            raise TypeError(
+                f'action must be an instance of Action, got {type(action).__name__} instead'
+            )
         if not isinstance(observation, Observation):
-            raise ValueError("observation must be an instance of Observation")
+            raise TypeError(
+                f'observation must be an instance of Observation, got {type(observation).__name__} instead'
+            )
         self.state.history.append((action, observation))
         self.state.updated_info.append((action, observation))
 
-    async def start_loop(self, task: str):
-        finished = False
-        plan = Plan(task)
-        self.state = State(plan)
-        for i in range(self.max_iterations):
+    async def _run(self):
+        if self.state is None:
+            return
+
+        if self._task_state != TaskState.RUNNING:
+            raise ValueError('Task is not in running state')
+
+        for i in range(self._cur_step, self.max_iterations):
+            self._cur_step = i
             try:
                 finished = await self.step(i)
+                if finished:
+                    self._task_state = TaskState.FINISHED
             except Exception as e:
-                print("Error in loop", e, flush=True)
+                logger.error('Error in loop', exc_info=True)
                 raise e
-            if finished:
+
+            if self._task_state == TaskState.FINISHED:
+                logger.info('Task finished by agent')
+                await self.reset_task()
                 break
-        if not finished:
-            print("Exited before finishing", flush=True)
+            elif self._task_state == TaskState.STOPPED:
+                logger.info('Task stopped by user')
+                await self.reset_task()
+                break
+            elif self._task_state == TaskState.PAUSED:
+                logger.info('Task paused')
+                self._cur_step = i + 1
+                await self.notify_task_state_changed()
+                break
+
+    async def start(self, task: str):
+        """Starts the agent controller with a task.
+        If task already run before, it will continue from the last step.
+        """
+        self._task_state = TaskState.RUNNING
+        await self.notify_task_state_changed()
+
+        self.state = State(Plan(task))
+
+        await self._run()
+
+    async def resume(self):
+        if self.state is None:
+            raise ValueError('No task to resume')
+
+        self._task_state = TaskState.RUNNING
+        await self.notify_task_state_changed()
+
+        await self._run()
+
+    async def reset_task(self):
+        self.state = None
+        self._cur_step = 0
+        self._task_state = TaskState.INIT
+        self.agent.reset()
+        await self.notify_task_state_changed()
+
+    async def set_task_state_to(self, state: TaskState):
+        self._task_state = state
+        if state == TaskState.STOPPED:
+            await self.reset_task()
+        logger.info(f'Task state set to {state}')
+
+    def get_task_state(self):
+        """Returns the current state of the agent task."""
+        return self._task_state
+
+    async def notify_task_state_changed(self):
+        await self._run_callbacks(TaskStateChangedAction(self._task_state))
 
     async def step(self, i: int):
-        print("\n\n==============", flush=True)
-        print("STEP", i, flush=True)
-        print_with_color(self.state.plan.main_goal, "PLAN")
+        if self.state is None:
+            return
+        logger.info(f'STEP {i}', extra={'msg_type': 'STEP'})
+        logger.info(self.state.plan.main_goal, extra={'msg_type': 'PLAN'})
+        if self.state.num_of_chars > self.max_chars:
+            raise MaxCharsExceedError(self.state.num_of_chars, self.max_chars)
 
-        log_obs = self.command_manager.get_background_obs()
+        log_obs = self.action_manager.get_background_obs()
         for obs in log_obs:
             self.add_history(NullAction(), obs)
             await self._run_callbacks(obs)
-            print_with_color(obs, "BACKGROUND LOG")
+            logger.info(obs, extra={'msg_type': 'BACKGROUND LOG'})
 
         self.update_state_for_step(i)
         action: Action = NullAction()
-        observation: Observation = NullObservation("")
+        observation: Observation = NullObservation('')
         try:
             action = self.agent.step(self.state)
             if action is None:
-                raise ValueError("Agent must return an action")
-            print_with_color(action, "ACTION")
+                raise AgentNoActionError()
+            logger.info(action, extra={'msg_type': 'ACTION'})
         except Exception as e:
             observation = AgentErrorObservation(str(e))
-            print_with_color(observation, "ERROR")
-            traceback.print_exc()
-            # TODO Change to more robust error handling
-            if "The api_key client option must be set" in observation.content:
-                raise 
+            logger.error(e)
+            logger.debug(traceback.format_exc())
+
+            # raise specific exceptions that need to be handled outside
+            # note: we are using classes from openai rather than litellm because:
+            # 1) litellm.exceptions.AuthenticationError is a subclass of openai.AuthenticationError
+            # 2) embeddings call, initiated by llama-index, has no wrapper for errors.
+            #    This means we have to catch individual authentication errors
+            #    from different providers, and OpenAI is one of these.
+            if isinstance(e, (AuthenticationError, ContextWindowExceededError, APIConnectionError)):
+                raise
+
         self.update_state_after_step()
 
         await self._run_callbacks(action)
 
         finished = isinstance(action, AgentFinishAction)
         if finished:
-            print_with_color(action, "INFO")
+            logger.info(action, extra={'msg_type': 'INFO'})
             return True
 
-        if isinstance(action, AddTaskAction):
-            try:
-                self.state.plan.add_subtask(action.parent, action.goal, action.subtasks)
-            except Exception as e:
-                observation = AgentErrorObservation(str(e))
-                print_with_color(observation, "ERROR")
-                traceback.print_exc()
-        elif isinstance(action, ModifyTaskAction):
-            try:
-                self.state.plan.set_subtask_state(action.id, action.state)
-            except Exception as e:
-                observation = AgentErrorObservation(str(e))
-                print_with_color(observation, "ERROR")
-                traceback.print_exc()
-
-        if action.executable:
-            try:
-                if inspect.isawaitable(action.run(self)):
-                    observation = await cast(Awaitable[Observation], action.run(self))
-                else:
-                    observation = action.run(self)
-            except Exception as e:
-                observation = AgentErrorObservation(str(e))
-                print_with_color(observation, "ERROR")
-                traceback.print_exc()
+        if isinstance(observation, NullObservation):
+            observation = await self.action_manager.run_action(action, self)
 
         if not isinstance(observation, NullObservation):
-            print_with_color(observation, "OBSERVATION")
+            logger.info(observation, extra={'msg_type': 'OBSERVATION'})
 
         self.add_history(action, observation)
         await self._run_callbacks(observation)
@@ -168,8 +212,12 @@ class AgentController:
         for callback in self.callbacks:
             idx = self.callbacks.index(callback)
             try:
-                callback(event)
+                await callback(event)
             except Exception as e:
-                print("Callback error:" + str(idx), e, flush=True)
-                pass
-        await asyncio.sleep(0.001) # Give back control for a tick, so we can await in callbacks
+                logger.exception(f'Callback error: {e}, idx: {idx}')
+        await asyncio.sleep(
+            0.001
+        )  # Give back control for a tick, so we can await in callbacks
+
+    def get_state(self):
+        return self.state

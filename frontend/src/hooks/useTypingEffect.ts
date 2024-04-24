@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Message } from "../state/chatSlice";
+import { Message } from "#/state/chatSlice";
 /**
  * hook to be used for typing chat effect
  */
@@ -8,26 +8,24 @@ export const useTypingEffect = (
   {
     loop = false,
     playbackRate = 0.1,
-    setTypingAcitve = () => {},
-    setCurrentQueueMarkerState = () => {},
-    currentQueueMarker = 0,
-    addAssistanctMessageToChat = () => {},
-    assistantMessageObj = { content: "", sender: "assistant" },
+    setTypingActive = () => {},
+    addAssistantMessageToChat = () => {},
+    takeOneAndType = () => {},
+    typeThis = { content: "", sender: "assistant" },
   }: {
     loop?: boolean;
     playbackRate?: number;
-    setTypingAcitve?: (bool: boolean) => void;
-    setCurrentQueueMarkerState?: (marker: number) => void;
-    currentQueueMarker?: number;
-    addAssistanctMessageToChat?: (msg: Message) => void;
-    assistantMessageObj?: Message;
+    setTypingActive?: (bool: boolean) => void;
+    addAssistantMessageToChat?: (msg: Message) => void;
+    takeOneAndType?: () => void;
+    typeThis?: Message;
   } = {
     loop: false,
     playbackRate: 0.1,
-    setTypingAcitve: () => {},
-    currentQueueMarker: 0,
-    addAssistanctMessageToChat: () => {},
-    assistantMessageObj: { content: "", sender: "assistant" },
+    setTypingActive: () => {},
+    addAssistantMessageToChat: () => {},
+    takeOneAndType: () => {},
+    typeThis: { content: "", sender: "assistant" },
   },
 ) => {
   // eslint-disable-next-line prefer-const
@@ -49,9 +47,9 @@ export const useTypingEffect = (
       stringIndex++;
       if (stringIndex === strings.length) {
         if (!loop) {
-          setTypingAcitve(false);
-          setCurrentQueueMarkerState(currentQueueMarker + 1);
-          addAssistanctMessageToChat(assistantMessageObj);
+          setTypingActive(false);
+          addAssistantMessageToChat(typeThis);
+          takeOneAndType();
           return;
         }
         stringIndex = 0;
@@ -73,6 +71,7 @@ export const useTypingEffect = (
     return () => {
       window.clearTimeout(timeoutId);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const nonBreakingSpace = "\u00A0";
