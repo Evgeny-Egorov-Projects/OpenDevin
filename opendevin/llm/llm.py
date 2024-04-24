@@ -18,7 +18,6 @@ LLM_RETRY_MIN_WAIT = config.get('LLM_RETRY_MIN_WAIT')
 LLM_RETRY_MAX_WAIT = config.get('LLM_RETRY_MAX_WAIT')
 
 
-
 class LLM:
     """
     The LLM class represents a Language Model instance.
